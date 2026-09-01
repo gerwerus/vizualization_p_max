@@ -1,0 +1,646 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>partition_key + P_MAX — динамические воркеры без двухфазного релиза</title>
+  <style>
+    :root {
+      --bg: #0f1419;
+      --surface: #1a2332;
+      --surface2: #243044;
+      --border: #3d4f66;
+      --text: #e7ecf3;
+      --muted: #8b9cb3;
+      --accent: #4dabf7;
+      --good: #51cf66;
+      --bad: #ff6b6b;
+      --warn: #fcc419;
+      --key-colors: #74c0fc, #63e6be, #b197fc, #ffa8a8, #ffd43b, #69db7c, #ff922b, #da77f2;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      padding: 2rem clamp(1rem, 4vw, 3rem);
+      max-width: 1100px;
+      margin: 0 auto;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 600;
+      margin-bottom: 0.5rem;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      margin-bottom: 2rem;
+      font-size: 0.95rem;
+    }
+
+    section {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin-bottom: 1.5rem;
+    }
+
+    h2 {
+      font-size: 1.1rem;
+      margin-bottom: 1rem;
+      color: var(--accent);
+    }
+
+    p, li { color: var(--muted); font-size: 0.9rem; }
+    p { margin-bottom: 0.75rem; }
+    strong { color: var(--text); font-weight: 600; }
+
+    .formula {
+      font-family: 'Cascadia Code', 'Fira Code', monospace;
+      background: var(--surface2);
+      padding: 0.75rem 1rem;
+      border-radius: 8px;
+      font-size: 0.85rem;
+      margin: 1rem 0;
+      border-left: 3px solid var(--accent);
+    }
+
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 1rem;
+      margin: 1rem 0;
+    }
+
+    label {
+      font-size: 0.9rem;
+      color: var(--text);
+    }
+
+    input[type="range"] {
+      width: 200px;
+      accent-color: var(--accent);
+    }
+
+    .n-badge {
+      display: inline-block;
+      background: var(--accent);
+      color: var(--bg);
+      font-weight: 700;
+      padding: 0.2rem 0.6rem;
+      border-radius: 6px;
+      font-size: 1rem;
+      min-width: 2rem;
+      text-align: center;
+    }
+
+    .pmax-note {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+  /* --- Key grid --- */
+    .key-grid {
+      display: grid;
+      grid-template-columns: repeat(8, 1fr);
+      gap: 6px;
+      margin: 1rem 0;
+    }
+
+  @media (max-width: 600px) {
+      .key-grid { grid-template-columns: repeat(4, 1fr); }
+    }
+
+    .key-cell {
+      aspect-ratio: 1;
+      border-radius: 8px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.75rem;
+      font-weight: 600;
+      border: 2px solid transparent;
+      transition: all 0.35s ease;
+      position: relative;
+      cursor: default;
+    }
+
+    .key-cell .key-num { font-size: 1rem; }
+    .key-cell .worker-label { font-size: 0.65rem; opacity: 0.9; margin-top: 2px; }
+
+    .key-cell.has-entity {
+      box-shadow: 0 0 0 2px var(--text);
+    }
+
+    .key-cell.highlight {
+      animation: pulse 1s ease infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { transform: scale(1); }
+      50% { transform: scale(1.05); }
+    }
+
+    .worker-legend {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.75rem;
+      margin-top: 1rem;
+    }
+
+    .legend-item {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .legend-swatch {
+      width: 14px;
+      height: 14px;
+      border-radius: 4px;
+    }
+
+  /* --- Entity timeline --- */
+    .entity-row {
+      display: flex;
+      align-items: center;
+      gap: 1rem;
+      padding: 0.75rem;
+      background: var(--surface2);
+      border-radius: 8px;
+      margin-bottom: 0.5rem;
+      flex-wrap: wrap;
+    }
+
+    .entity-name {
+      font-weight: 600;
+      min-width: 100px;
+      font-size: 0.85rem;
+    }
+
+    .entity-key {
+      font-family: monospace;
+      font-size: 0.8rem;
+      color: var(--warn);
+    }
+
+    .events-chain {
+      display: flex;
+      gap: 4px;
+      flex: 1;
+      min-width: 120px;
+    }
+
+    .event-dot {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.7rem;
+      font-weight: 700;
+      background: var(--surface);
+      border: 1px solid var(--border);
+    }
+
+    .arrow { color: var(--muted); font-size: 1.2rem; }
+
+  /* --- Compare columns --- */
+    .compare {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    @media (max-width: 700px) {
+      .compare { grid-template-columns: 1fr; }
+    }
+
+    .compare-col {
+      padding: 1rem;
+      border-radius: 8px;
+      border: 1px solid var(--border);
+    }
+
+    .compare-col.good { border-color: var(--good); }
+    .compare-col.bad { border-color: var(--bad); }
+
+    .compare-col h3 {
+      font-size: 0.95rem;
+      margin-bottom: 0.75rem;
+    }
+
+    .compare-col.good h3 { color: var(--good); }
+    .compare-col.bad h3 { color: var(--bad); }
+
+  /* --- Lock diagram --- */
+    .lock-flow {
+      display: flex;
+      align-items: stretch;
+      gap: 0;
+      margin: 1.5rem 0;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .lock-step {
+      flex: 1;
+      min-width: 140px;
+      max-width: 180px;
+      padding: 1rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      text-align: center;
+      position: relative;
+    }
+
+    .lock-step:first-child { border-radius: 8px 0 0 8px; }
+    .lock-step:last-child { border-radius: 0 8px 8px 0; }
+
+    .lock-step .step-num {
+      font-size: 0.7rem;
+      color: var(--muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .lock-step .step-title {
+      font-size: 0.85rem;
+      font-weight: 600;
+      margin-bottom: 0.25rem;
+    }
+
+    .lock-step .step-desc {
+      font-size: 0.75rem;
+      color: var(--muted);
+    }
+
+    .lock-arrow {
+      display: flex;
+      align-items: center;
+      color: var(--accent);
+      font-size: 1.5rem;
+      padding: 0 0.25rem;
+    }
+
+    .insight-box {
+      background: linear-gradient(135deg, #1e3a5f 0%, #1a2332 100%);
+      border: 1px solid var(--accent);
+      border-radius: 8px;
+      padding: 1rem;
+      margin-top: 1rem;
+    }
+
+    .insight-box p { color: var(--text); margin: 0; }
+
+    button {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--text);
+      padding: 0.5rem 1rem;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 0.85rem;
+      transition: background 0.2s;
+    }
+
+    button:hover { background: var(--border); }
+    button.active { background: var(--accent); color: var(--bg); border-color: var(--accent); }
+
+    .scenario-btns { display: flex; gap: 0.5rem; flex-wrap: wrap; margin-bottom: 1rem; }
+
+    .danger-zone {
+      background: rgba(255, 107, 107, 0.15);
+      border: 1px dashed var(--bad);
+      border-radius: 8px;
+      padding: 0.75rem;
+      margin-top: 0.75rem;
+      font-size: 0.8rem;
+      color: #ffb3b3;
+    }
+  </style>
+</head>
+<body>
+
+<h1>Динамические воркеры без двухфазного релиза</h1>
+<p class="subtitle">
+  LAVKAPROJECTS-6946 · как <code>partition_key</code> и константа <code>P_MAX</code>
+  разводят «куда лежит событие» и «кто его обрабатывает»
+</p>
+
+<!-- 1. Core idea -->
+<section>
+  <h2>1. Две разные вещи</h2>
+  <p>
+    <strong>partition_key</strong> — свойство <em>строки</em> в <code>events</code>.
+    Считается один раз при INSERT и <strong>никогда не меняется</strong>.
+  </p>
+  <p>
+    <strong>N (workers)</strong> — настройка <em>перекладчика</em> в рантайм-конфиге.
+    Меняется без выкатки.
+  </p>
+  <div class="formula">
+    partition_key = md5(поле_сущности) % <strong>P_MAX</strong> &nbsp;&nbsp;// P_MAX = 16, константа кода<br>
+    воркер i владеет ключами { k ∈ [0, P_MAX) : k % N == i }
+  </div>
+  <p>
+  <strong>P_MAX</strong> задаёт фиксированное число «корзин» (0…15).
+  События одной сущности всегда попадают в одну корзину — независимо от N.
+  </p>
+</section>
+
+<!-- 2. Interactive grid -->
+<section>
+  <h2>2. Интерактив: меняем N — события не переезжают</h2>
+  <p>
+    Три сущности (заказы) с фиксированными ключами. Подвинь слайдер —
+    меняется только <strong>цвет воркера</strong>, не позиция сущности.
+  </p>
+
+  <div class="controls">
+    <label>Число воркеров N = <span class="n-badge" id="nValue">2</span></label>
+    <input type="range" id="nSlider" min="1" max="8" value="2">
+    <span class="pmax-note">P_MAX = 16 (фиксировано в коде)</span>
+  </div>
+
+  <div class="entity-row">
+    <span class="entity-name">Заказ α</span>
+    <span class="entity-key">key = 3</span>
+    <span class="arrow">→</span>
+    <div class="events-chain" id="chainAlpha"></div>
+    <span id="ownerAlpha" style="font-size:0.8rem;color:var(--muted)"></span>
+  </div>
+  <div class="entity-row">
+    <span class="entity-name">Заказ β</span>
+    <span class="entity-key">key = 7</span>
+    <span class="arrow">→</span>
+    <div class="events-chain" id="chainBeta"></div>
+    <span id="ownerBeta" style="font-size:0.8rem;color:var(--muted)"></span>
+  </div>
+  <div class="entity-row">
+    <span class="entity-name">Заказ γ</span>
+    <span class="entity-key">key = 11</span>
+    <span class="arrow">→</span>
+    <div class="events-chain" id="chainGamma"></div>
+    <span id="ownerGamma" style="font-size:0.8rem;color:var(--muted)"></span>
+  </div>
+
+  <p style="margin-top:1rem">Все 16 ключей (корзин P_MAX):</p>
+  <div class="key-grid" id="keyGrid"></div>
+  <div class="worker-legend" id="workerLegend"></div>
+
+  <div class="insight-box">
+    <p>
+      При N=2 → N=4 заказ β остаётся в <strong>корзине 7</strong>.
+      Меняется только владелец: воркер 1 → воркер 3.
+      События β не оказываются в двух корзинах одновременно → порядок не рвётся.
+    </p>
+  </div>
+</section>
+
+<!-- 3. Lock handoff -->
+<section>
+  <h2>3. Почему не нужен двухфазный релиз: лок на ключ</h2>
+  <p>
+    Каждый ключ обрабатывается под блокировкой
+    <code>event_push-{db}-{shard}-{type}-p{k}</code>.
+    Новый владелец не может начать, пока старый не отпустит лок.
+  </p>
+
+  <div class="scenario-btns">
+    <button class="active" data-scenario="scale-up">N: 2 → 4 (масштабирование)</button>
+    <button data-scenario="scale-down">N: 4 → 2 (сжатие)</button>
+  </div>
+
+  <div class="lock-flow" id="lockFlow"></div>
+
+  <div class="insight-box">
+    <p id="lockInsight"></p>
+  </div>
+</section>
+
+<!-- 4. Bad vs Good -->
+<section>
+  <h2>4. Отклонённая альтернатива: hash(pk) % N</h2>
+  <div class="compare">
+    <div class="compare-col good">
+      <h3>✓ md5(pk) % P_MAX (наш дизайн)</h3>
+      <p>Ключ в строке, N только делит владение.</p>
+      <ul style="margin-left:1.2rem;margin-top:0.5rem">
+        <li>События сущности всегда в одной корзине</li>
+        <li>Смена N = смена владельца, не переезд данных</li>
+        <li>Лок на ключ → безопасный handoff</li>
+        <li>Писателям N знать не надо</li>
+      </ul>
+    </div>
+    <div class="compare-col bad">
+      <h3>✗ hash(pk) % N (отклонено)</h3>
+      <p>Ключ зависит от текущего N.</p>
+      <ul style="margin-left:1.2rem;margin-top:0.5rem">
+        <li>При N=2: заказ → корзина 1</li>
+        <li>При N=4: тот же заказ → корзина 3</li>
+        <li>Старые и новые события в разных корзинах</li>
+        <li>Два воркера обрабатывают параллельно → порядок сломан</li>
+      </ul>
+      <div class="danger-zone" id="badExample"></div>
+    </div>
+  </div>
+</section>
+
+<!-- 5. Role of P_MAX -->
+<section>
+  <h2>5. Зачем именно P_MAX, а не «просто N воркеров»</h2>
+  <p><strong>P_MAX</strong> — стабильная гранулярность в данных. <strong>N</strong> — операционный рычаг.</p>
+  <table style="width:100%;border-collapse:collapse;font-size:0.85rem;margin-top:0.75rem">
+    <thead>
+      <tr style="border-bottom:1px solid var(--border);text-align:left">
+        <th style="padding:0.5rem;color:var(--muted)"></th>
+        <th style="padding:0.5rem;color:var(--text)">P_MAX = 16</th>
+        <th style="padding:0.5rem;color:var(--text)">N workers</th>
+      </tr>
+    </thead>
+    <tbody style="color:var(--muted)">
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:0.5rem">Где живёт</td>
+        <td style="padding:0.5rem">колонка в <code>events</code></td>
+        <td style="padding:0.5rem">динамический конфиг</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:0.5rem">Меняется</td>
+        <td style="padding:0.5rem">только выкаткой (+ окно partitioned:false)</td>
+        <td style="padding:0.5rem">из админки, раз в 60 с</td>
+      </tr>
+      <tr style="border-bottom:1px solid var(--border)">
+        <td style="padding:0.5rem">Знают писатели</td>
+        <td style="padding:0.5rem">да (всегда % 16)</td>
+        <td style="padding:0.5rem">нет</td>
+      </tr>
+      <tr>
+        <td style="padding:0.5rem">Потолок параллелизма</td>
+        <td style="padding:0.5rem">16 независимых локов на (shard, type)</td>
+        <td style="padding:0.5rem">сколько реально поднято (≤ P_MAX)</td>
+      </tr>
+    </tbody>
+  </table>
+  <p style="margin-top:1rem">
+    Без P_MAX пришлось бы либо привязать ключ к N (двухфазный релиз),
+    либо при N=1 обходить все ключи впустую — P_MAX фиксирует «решётку»,
+    а N лишь группирует ячейки между воркерами.
+  </p>
+</section>
+
+<script>
+  const P_MAX = 16;
+  const WORKER_COLORS = [
+    '#4dabf7', '#51cf66', '#fcc419', '#ff6b6b',
+    '#b197fc', '#ff922b', '#63e6be', '#da77f2'
+  ];
+
+  const ENTITIES = [
+    { name: 'α', key: 3, events: ['e1', 'e2', 'e3'], chainId: 'chainAlpha', ownerId: 'ownerAlpha' },
+    { name: 'β', key: 7, events: ['e1', 'e2'], chainId: 'chainBeta', ownerId: 'ownerBeta' },
+    { name: 'γ', key: 11, events: ['e1', 'e2', 'e3', 'e4'], chainId: 'chainGamma', ownerId: 'ownerGamma' },
+  ];
+
+  const ENTITY_KEYS = new Set(ENTITIES.map(e => e.key));
+
+  function ownerOfKey(k, n) {
+    return k % n;
+  }
+
+  function renderChains(n) {
+    ENTITIES.forEach(ent => {
+      const chain = document.getElementById(ent.chainId);
+      const owner = ownerOfKey(ent.key, n);
+      const color = WORKER_COLORS[owner % WORKER_COLORS.length];
+      chain.innerHTML = ent.events.map((e, i) =>
+        `<div class="event-dot" style="border-color:${color};color:${color}" title="serial ${i+1}">${i+1}</div>`
+      ).join('');
+      document.getElementById(ent.ownerId).textContent =
+        `→ воркер ${owner} (ключ ${ent.key} % ${n} = ${ent.key % n})`;
+      document.getElementById(ent.ownerId).style.color = color;
+    });
+  }
+
+  function renderGrid(n) {
+    const grid = document.getElementById('keyGrid');
+    grid.innerHTML = '';
+    for (let k = 0; k < P_MAX; k++) {
+      const w = ownerOfKey(k, n);
+      const color = WORKER_COLORS[w % WORKER_COLORS.length];
+      const cell = document.createElement('div');
+      cell.className = 'key-cell' + (ENTITY_KEYS.has(k) ? ' has-entity highlight' : '');
+      cell.style.background = color + '33';
+      cell.style.borderColor = color;
+      cell.innerHTML = `<span class="key-num">${k}</span><span class="worker-label">W${w}</span>`;
+      cell.title = `ключ ${k} → воркер ${w}`;
+      grid.appendChild(cell);
+    }
+
+    const legend = document.getElementById('workerLegend');
+    legend.innerHTML = '';
+    for (let w = 0; w < n; w++) {
+      const keys = [];
+      for (let k = 0; k < P_MAX; k++) if (ownerOfKey(k, n) === w) keys.push(k);
+      const item = document.createElement('div');
+      item.className = 'legend-item';
+      item.innerHTML = `
+        <div class="legend-swatch" style="background:${WORKER_COLORS[w]}"></div>
+        <span>Воркер ${w}: ключи {${keys.join(', ')}}</span>`;
+      legend.appendChild(item);
+    }
+  }
+
+  function update(n) {
+    document.getElementById('nValue').textContent = n;
+    renderChains(n);
+    renderGrid(n);
+    renderBadExample(n);
+  }
+
+  const slider = document.getElementById('nSlider');
+  slider.addEventListener('input', () => update(+slider.value));
+
+  // Lock flow scenarios
+  const SCENARIOS = {
+    'scale-up': {
+      title: 'N: 2 → 4, ключ 7 (заказ β)',
+      steps: [
+        { title: 'До смены', desc: 'N=2, ключ 7 у воркера 1. W1 держит лок, обрабатывает батч.' },
+        { title: 'Конфиг N=4', desc: 'Ключ 7 теперь у воркера 3 (7%4=3). W3 пытается взять лок.' },
+        { title: 'W3 ждёт', desc: 'lock_timeout: W3 не может. W1 дорабатывает батч по serial.' },
+        { title: 'Handoff', desc: 'W1 отпускает лок. W3 забирает ключ 7. Порядок сохранён.' },
+      ],
+      insight: 'Координация через лок — не нужен дренаж очереди и не нужен двухфазный релиз «сначала пушеры, потом писатели».'
+    },
+    'scale-down': {
+      title: 'N: 4 → 2, ключ 7 (заказ β)',
+      steps: [
+        { title: 'До смены', desc: 'N=4, ключ 7 у воркера 3.' },
+        { title: 'Конфиг N=2', desc: 'Ключ 7 переходит к воркеру 1 (7%2=1). W1 и W3 оба претендуют.' },
+        { title: 'W3 завершает', desc: 'W3 дорабатывает текущий батч, отпускает лок, гасится.' },
+        { title: 'W1 подхватывает', desc: 'W1 забирает ключ 7. События β ни разу не обрабатывались параллельно.' },
+      ],
+      insight: 'Уменьшение N симметрично увеличению: лишний воркер дорабатывает и уходит, ключи не теряются.'
+    }
+  };
+
+  function renderLockFlow(scenario) {
+    const data = SCENARIOS[scenario];
+    const flow = document.getElementById('lockFlow');
+    flow.innerHTML = data.steps.map((s, i) => {
+      const arrow = i < data.steps.length - 1
+        ? '<div class="lock-arrow">→</div>' : '';
+      return `
+        <div class="lock-step">
+          <div class="step-num">шаг ${i + 1}</div>
+          <div class="step-title">${s.title}</div>
+          <div class="step-desc">${s.desc}</div>
+        </div>${arrow}`;
+    }).join('');
+    document.getElementById('lockInsight').textContent = data.insight;
+  }
+
+  document.querySelectorAll('[data-scenario]').forEach(btn => {
+    btn.addEventListener('click', () => {
+      document.querySelectorAll('[data-scenario]').forEach(b => b.classList.remove('active'));
+      btn.classList.add('active');
+      renderLockFlow(btn.dataset.scenario);
+    });
+  });
+
+  function renderBadExample(n) {
+    // Show what happens with hash % N for order beta (key 7) when N changes
+    const pk = 7; // simplified: use same number
+    const nOld = 2;
+    const nNew = 4;
+    const badOld = pk % nOld;
+    const badNew = pk % nNew;
+    const el = document.getElementById('badExample');
+    el.innerHTML = `
+      <strong>Пример при hash(pk) % N:</strong> сущность с pk≡7 mod …<br>
+      N=2 → корзина <strong>${badOld}</strong> (воркер ${badOld}) &nbsp;|&nbsp;
+      N=4 → корзина <strong>${badNew}</strong> (воркер ${badNew})<br>
+      События, уже лежащие в корзине ${badOld}, и новые в корзине ${badNew}
+      обрабатываются <strong>параллельно</strong> → нарушение порядка.
+      Лечится только дренажом + двухфазным релизом.
+    `;
+  }
+
+  // Init
+  update(2);
+  renderLockFlow('scale-up');
+</script>
+
+</body>
+</html>
