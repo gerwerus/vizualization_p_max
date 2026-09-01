@@ -194,27 +194,11 @@
       color: var(--warn);
     }
 
-    .events-chain {
-      display: flex;
-      gap: 4px;
-      flex: 1;
-      min-width: 120px;
+    .entity-owner {
+      font-size: 0.8rem;
+      color: var(--muted);
+      margin-left: auto;
     }
-
-    .event-dot {
-      width: 28px;
-      height: 28px;
-      border-radius: 6px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      font-size: 0.7rem;
-      font-weight: 700;
-      background: var(--surface);
-      border: 1px solid var(--border);
-    }
-
-    .arrow { color: var(--muted); font-size: 1.2rem; }
 
   /* --- Compare columns --- */
     .compare {
@@ -376,23 +360,17 @@
   <div class="entity-row">
     <span class="entity-name">Заказ α</span>
     <span class="entity-key">key = 3</span>
-    <span class="arrow">→</span>
-    <div class="events-chain" id="chainAlpha"></div>
-    <span id="ownerAlpha" style="font-size:0.8rem;color:var(--muted)"></span>
+    <span id="ownerAlpha" class="entity-owner"></span>
   </div>
   <div class="entity-row">
     <span class="entity-name">Заказ β</span>
     <span class="entity-key">key = 7</span>
-    <span class="arrow">→</span>
-    <div class="events-chain" id="chainBeta"></div>
-    <span id="ownerBeta" style="font-size:0.8rem;color:var(--muted)"></span>
+    <span id="ownerBeta" class="entity-owner"></span>
   </div>
   <div class="entity-row">
     <span class="entity-name">Заказ γ</span>
     <span class="entity-key">key = 11</span>
-    <span class="arrow">→</span>
-    <div class="events-chain" id="chainGamma"></div>
-    <span id="ownerGamma" style="font-size:0.8rem;color:var(--muted)"></span>
+    <span id="ownerGamma" class="entity-owner"></span>
   </div>
 
   <p style="margin-top:1rem">Все 16 ключей (корзин P_MAX):</p>
@@ -514,9 +492,9 @@
   }
 
   const ENTITIES = [
-    { name: 'α', key: 3, events: ['e1', 'e2', 'e3'], chainId: 'chainAlpha', ownerId: 'ownerAlpha' },
-    { name: 'β', key: 7, events: ['e1', 'e2'], chainId: 'chainBeta', ownerId: 'ownerBeta' },
-    { name: 'γ', key: 11, events: ['e1', 'e2', 'e3', 'e4'], chainId: 'chainGamma', ownerId: 'ownerGamma' },
+    { name: 'α', key: 3, ownerId: 'ownerAlpha' },
+    { name: 'β', key: 7, ownerId: 'ownerBeta' },
+    { name: 'γ', key: 11, ownerId: 'ownerGamma' },
   ];
 
   const ENTITY_KEYS = new Set(ENTITIES.map(e => e.key));
@@ -525,17 +503,13 @@
     return k % n;
   }
 
-  function renderChains(n) {
+  function renderEntities(n) {
     ENTITIES.forEach(ent => {
-      const chain = document.getElementById(ent.chainId);
       const owner = ownerOfKey(ent.key, n);
       const color = workerColor(owner);
-      chain.innerHTML = ent.events.map((e, i) =>
-        `<div class="event-dot" style="border-color:${color};color:${color}" title="serial ${i+1}">${i+1}</div>`
-      ).join('');
-      document.getElementById(ent.ownerId).textContent =
-        `→ воркер ${owner} (ключ ${ent.key} % ${n} = ${ent.key % n})`;
-      document.getElementById(ent.ownerId).style.color = color;
+      const el = document.getElementById(ent.ownerId);
+      el.textContent = `→ воркер ${owner} (ключ ${ent.key} % ${n} = ${ent.key % n})`;
+      el.style.color = color;
     });
   }
 
@@ -570,7 +544,7 @@
 
   function update(n) {
     document.getElementById('nValue').textContent = n;
-    renderChains(n);
+    renderEntities(n);
     renderGrid(n);
     renderBadExample(n);
   }
