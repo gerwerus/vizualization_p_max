@@ -501,10 +501,17 @@
 
 <script>
   const P_MAX = 16;
-  const WORKER_COLORS = [
-    '#4dabf7', '#51cf66', '#fcc419', '#ff6b6b',
-    '#b197fc', '#ff922b', '#63e6be', '#da77f2'
-  ];
+  function workerHue(w) {
+    return Math.round((w * 360) / P_MAX);
+  }
+
+  function workerColor(w) {
+    return `hsl(${workerHue(w)}, 72%, 58%)`;
+  }
+
+  function workerBg(w) {
+    return `hsla(${workerHue(w)}, 72%, 58%, 0.22)`;
+  }
 
   const ENTITIES = [
     { name: 'α', key: 3, events: ['e1', 'e2', 'e3'], chainId: 'chainAlpha', ownerId: 'ownerAlpha' },
@@ -522,7 +529,7 @@
     ENTITIES.forEach(ent => {
       const chain = document.getElementById(ent.chainId);
       const owner = ownerOfKey(ent.key, n);
-      const color = WORKER_COLORS[owner % WORKER_COLORS.length];
+      const color = workerColor(owner);
       chain.innerHTML = ent.events.map((e, i) =>
         `<div class="event-dot" style="border-color:${color};color:${color}" title="serial ${i+1}">${i+1}</div>`
       ).join('');
@@ -537,10 +544,10 @@
     grid.innerHTML = '';
     for (let k = 0; k < P_MAX; k++) {
       const w = ownerOfKey(k, n);
-      const color = WORKER_COLORS[w % WORKER_COLORS.length];
+      const color = workerColor(w);
       const cell = document.createElement('div');
       cell.className = 'key-cell' + (ENTITY_KEYS.has(k) ? ' has-entity highlight' : '');
-      cell.style.background = color + '33';
+      cell.style.background = workerBg(w);
       cell.style.borderColor = color;
       cell.innerHTML = `<span class="key-num">${k}</span><span class="worker-label">W${w}</span>`;
       cell.title = `ключ ${k} → воркер ${w}`;
@@ -555,7 +562,7 @@
       const item = document.createElement('div');
       item.className = 'legend-item';
       item.innerHTML = `
-        <div class="legend-swatch" style="background:${WORKER_COLORS[w]}"></div>
+        <div class="legend-swatch" style="background:${workerColor(w)}"></div>
         <span>Воркер ${w}: ключи {${keys.join(', ')}}</span>`;
       legend.appendChild(item);
     }
